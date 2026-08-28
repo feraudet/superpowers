@@ -4,9 +4,9 @@ A superpowers project leaves two records of how far it has gotten, and neither
 one is visible while you work:
 
 - **The SDD ledger.** `subagent-driven-development` writes
-  `.superpowers/sdd/<plan-basename>/progress.md`, appending `Task N: complete`
-  as each task passes review. This is the record an autonomous run actually
-  produces.
+  `.superpowers/sdd/<plan-basename>/progress.md`, appending
+  `Task <N>: complete (commits <base7>..<head7>, review clean)` as each task
+  passes review. This is the record an autonomous run actually produces.
 - **The plan's checkboxes.** `writing-plans` emits every step as `- [ ]`. No
   skill ticks them for you today — they are ticked when you or your agent
   update the plan file by hand.
