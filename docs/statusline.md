@@ -35,8 +35,9 @@ Find the script inside your installed plugin:
 find ~/.claude/plugins -name superpowers-statusline -type f | head -1
 ```
 
-Then point `statusLine` at it in `~/.claude/settings.json` (use the absolute
-path — `statusLine` does not expand `${CLAUDE_PLUGIN_ROOT}`):
+Then point `statusLine` at it in `~/.claude/settings.json`. The command runs in
+a shell, so `~` expands, but plugin variables like `${CLAUDE_PLUGIN_ROOT}` do
+not — give it a real path:
 
 ```json
 {
@@ -47,6 +48,11 @@ path — `statusLine` does not expand `${CLAUDE_PLUGIN_ROOT}`):
   }
 }
 ```
+
+Superpowers cannot switch this on for you: a plugin's bundled `settings.json`
+may only default `agent` and `subagentStatusLine`, never `statusLine`. That is
+the right constraint — a statusline is one line per user, and yours may already
+be showing something you care about.
 
 On Windows, point at `statusline/run-statusline.cmd` instead; it locates Git
 Bash and runs the script.

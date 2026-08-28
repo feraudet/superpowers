@@ -242,6 +242,19 @@ output="$(run_statusline "$project" --segment --no-color)"
 assert_contains "a ledger with every task closed reads 100%" "$output" "100%"
 assert_contains "a finished ledger uses the done marker" "$output" "✓"
 
+# The completion line SDD actually writes carries a commit-range parenthetical.
+project="$(make_project ledger-real-format)"
+plan="$project/docs/superpowers/plans/2026-01-01-real-format.md"
+write_plan "$plan" 8 0 4
+mkdir -p "$project/.superpowers/sdd/2026-01-01-real-format"
+{
+  echo "# SDD ledger — plan: docs/superpowers/plans/2026-01-01-real-format.md"
+  echo "- Task 1: complete (commits a1b2c3d..e4f5a6b, review clean)"
+  echo "- Task 2: complete (commits e4f5a6b..c7d8e9f, 2 parked)"
+} >"$project/.superpowers/sdd/2026-01-01-real-format/progress.md"
+output="$(run_statusline "$project" --segment --no-color)"
+assert_contains "reads SDD's real completion lines" "$output" "2/4 tasks"
+
 # A plan with no checkboxes at all is still reportable once it has a ledger.
 project="$(make_project ledger-no-boxes)"
 plan="$project/docs/superpowers/plans/2026-01-01-headings-only.md"
@@ -278,6 +291,16 @@ printf '# SDD ledger — plan: %s\nTask 1: complete\nTask 2: complete\n' "$plan"
   >"$project/.superpowers/sdd/progress.md"
 output="$(run_statusline "$project" --segment --no-color)"
 assert_contains "the legacy flat ledger path is not read" "$output" "1/4 steps"
+
+# SDD runs in a worktree, where the ledger sits under that worktree's root.
+project="$(make_project ledger-worktree)"
+worktree="$TEST_ROOT/ledger-worktree-linked"
+git -C "$project" worktree add -q -b sdd/widgets "$worktree" 2>/dev/null
+mkdir -p "$worktree/docs/superpowers/plans"
+write_plan "$worktree/docs/superpowers/plans/2026-01-01-in-worktree.md" 6 0 3
+write_ledger "$worktree" "2026-01-01-in-worktree" "docs/superpowers/plans/2026-01-01-in-worktree.md" 1 2
+output="$(run_statusline "$worktree" --segment --no-color)"
+assert_contains "finds the ledger inside a linked worktree" "$output" "2/3 tasks"
 
 # With no branch match, a plan under a live ledger beats a plan with ticked boxes.
 project="$(make_project ledger-priority)"
