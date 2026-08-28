@@ -22,6 +22,7 @@ Superpowers is a complete software development methodology for your coding agent
   - [Pi](#pi)
   - [Hermes Agent](#hermes-agent)
 - [The Basic Workflow](#the-basic-workflow)
+- [Project Progress In Your Statusline](#project-progress-in-your-statusline)
 - [Community](#community)
 - [What's Inside](#whats-inside)
 - [Philosophy](#philosophy)
@@ -275,6 +276,21 @@ turn loses the bootstrap — start a fresh session if skills stop triggering.
 7. **finishing-a-development-branch** - Activates when tasks complete. Verifies tests, presents options (merge/PR/keep/discard), cleans up worktree.
 
 **The agent checks for relevant skills before any task.** Mandatory workflows, not suggestions.
+
+## Project Progress In Your Statusline
+
+Steps 3-4 above leave a paper trail: a plan file whose checkboxes get ticked off
+as the work lands. `statusline/superpowers-statusline` renders that as a
+statusline segment, so you can watch a long autonomous run advance without
+opening the plan:
+
+```
+superpowers · claude/add-widgets · ⚡ add-widgets ▰▰▰▰▰▰▱▱▱▱ 61% · task 4/7: Wire the CLI flag · 22/36 steps
+```
+
+Point your harness's statusline command at the script — see
+[docs/statusline.md](docs/statusline.md) for setup, for composing it into a
+statusline you already have, and for the options.
 
 ## Community
 

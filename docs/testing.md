@@ -17,6 +17,7 @@ Live in `tests/`. Currently:
 - `tests/claude-code/test-subagent-driven-development.sh` — agent-can-describe-SDD test (no drill counterpart; tests description-recall, not behavior).
 - `tests/claude-code/test-subagent-driven-development-integration.sh` — extended SDD integration with token analysis (drill covers the YAGNI subset; bash adds commit-count, Claude Code task-tracking, and token telemetry assertions).
 - `tests/claude-code/test-worktree-native-preference.sh` — RED-GREEN-REFACTOR validation for worktree skill (drill covers the PRESSURE phase; bash also covers RED/GREEN baselines).
+- `tests/statusline/test-superpowers-statusline.sh` — bash tests for the progress statusline: plan discovery, step/task counting, rendering options.
 - `tests/explicit-skill-requests/` — Haiku-specific, multi-turn, and skill-name-prompted tests not covered by drill.
 
 Run plugin tests via the relevant directory's `run-*.sh` or `npm test`.

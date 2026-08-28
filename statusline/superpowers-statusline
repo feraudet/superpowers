@@ -1,0 +1,434 @@
+#!/usr/bin/env bash
+#
+# Superpowers progress statusline.
+#
+# Reads the plan a superpowers project is executing and renders how far it has
+# gotten, for use as a Claude Code (or compatible harness) statusLine command.
+#
+# Usage:
+#   superpowers-statusline [options]
+#
+# Options:
+#   --segment        Print only the progress segment (compose it yourself).
+#   --plan PATH      Track this plan file instead of auto-detecting one.
+#   --dir PATH       Use this project directory instead of the one on stdin.
+#   --style STYLE    full (default) or compact.
+#   --width N        Progress bar width in characters (default 10).
+#   --ascii          Use ASCII bar characters instead of Unicode.
+#   --no-color       Disable ANSI colors.
+#   -h, --help       Show this help.
+#
+# The harness passes its status JSON on stdin; the project directory is taken
+# from .workspace.current_dir, falling back to .cwd, falling back to $PWD.
+#
+# Environment:
+#   SUPERPOWERS_STATUSLINE_PLAN       Plan file to track (same as --plan).
+#   SUPERPOWERS_STATUSLINE_PLAN_DIRS  Colon-separated plan directories to search.
+#   SUPERPOWERS_STATUSLINE_STYLE      Same as --style.
+#   SUPERPOWERS_STATUSLINE_WIDTH      Same as --width.
+#   NO_COLOR                          Disable ANSI colors.
+
+set -uo pipefail
+
+DEFAULT_PLAN_DIRS="docs/superpowers/plans:docs/plans:plans"
+
+usage() {
+  sed -n '3,28p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# ---------------------------------------------------------------- arguments --
+
+segment_only=false
+plan_override="${SUPERPOWERS_STATUSLINE_PLAN:-}"
+project_dir=""
+style="${SUPERPOWERS_STATUSLINE_STYLE:-full}"
+bar_width="${SUPERPOWERS_STATUSLINE_WIDTH:-10}"
+ascii=false
+use_color=true
+
+if [ -n "${NO_COLOR:-}" ]; then
+  use_color=false
+fi
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --segment)
+      segment_only=true
+      ;;
+    --plan)
+      plan_override="${2:-}"
+      shift
+      ;;
+    --dir)
+      project_dir="${2:-}"
+      shift
+      ;;
+    --style)
+      style="${2:-full}"
+      shift
+      ;;
+    --width)
+      bar_width="${2:-10}"
+      shift
+      ;;
+    --ascii)
+      ascii=true
+      ;;
+    --no-color)
+      use_color=false
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "superpowers-statusline: unknown option: $1" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+case "$bar_width" in
+  '' | *[!0-9]*) bar_width=10 ;;
+esac
+[ "$bar_width" -ge 1 ] 2>/dev/null || bar_width=10
+[ "$bar_width" -le 40 ] || bar_width=40
+
+# --------------------------------------------------------------- harness IO --
+
+# Read the harness status JSON, if the harness gave us one.
+status_json=""
+if [ ! -t 0 ]; then
+  status_json="$(cat 2>/dev/null || true)"
+fi
+
+# Pull a string value out of the status JSON without a JSON parser: the payload
+# is machine-generated, so the first match for a key is the one we want.
+json_string() {
+  local key="$1" raw
+
+  [ -n "$status_json" ] || return 0
+
+  raw="$(printf '%s' "$status_json" \
+    | tr '\n' ' ' \
+    | grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
+    | head -n 1 \
+    | sed 's/^[^:]*:[[:space:]]*"//; s/"$//')" || return 0
+
+  # Undo the JSON escaping that survives a path round-trip (Windows paths).
+  raw="${raw//\\\\/\\}"
+  raw="${raw//\\\//\/}"
+  printf '%s' "$raw"
+}
+
+if [ -z "$project_dir" ]; then
+  project_dir="$(json_string current_dir)"
+fi
+if [ -z "$project_dir" ]; then
+  project_dir="$(json_string cwd)"
+fi
+if [ -z "$project_dir" ] || [ ! -d "$project_dir" ]; then
+  project_dir="$PWD"
+fi
+
+git_root="$(git -C "$project_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+
+branch=""
+if [ -n "$git_root" ]; then
+  branch="$(git -C "$project_dir" branch --show-current 2>/dev/null || true)"
+  if [ -z "$branch" ]; then
+    branch="$(git -C "$project_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  fi
+  [ "$branch" = "HEAD" ] && branch="detached"
+fi
+
+# ------------------------------------------------------------ plan discovery --
+
+# Strip the date prefix and extension: "2026-08-28-add-widgets.md" -> "add-widgets".
+plan_slug() {
+  local name="${1##*/}"
+  name="${name%.md}"
+  case "$name" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*) name="${name#????-??-??-}" ;;
+  esac
+  printf '%s' "$name"
+}
+
+# Collapse runs of non-alphanumerics into single dashes so branch names and plan
+# slugs compare cleanly. Pure bash: this runs on every keystroke.
+normalize() {
+  local text="${1//[!a-zA-Z0-9]/-}"
+  while [ "$text" != "${text//--/-}" ]; do
+    text="${text//--/-}"
+  done
+  text="${text#-}"
+  text="${text%-}"
+  printf '%s' "$text"
+}
+
+candidates=()
+collect_candidates() {
+  local root="$1" rel dir file saved_ifs
+
+  [ -n "$root" ] && [ -d "$root" ] || return 0
+
+  saved_ifs="$IFS"
+  IFS=':'
+  # shellcheck disable=SC2086
+  set -- ${SUPERPOWERS_STATUSLINE_PLAN_DIRS:-$DEFAULT_PLAN_DIRS}
+  IFS="$saved_ifs"
+
+  for rel in "$@"; do
+    [ -n "$rel" ] || continue
+    case "$rel" in
+      /*) dir="$rel" ;;
+      *) dir="$root/$rel" ;;
+    esac
+    [ -d "$dir" ] || continue
+    for file in "$dir"/*.md; do
+      [ -f "$file" ] || continue
+      candidates+=("$file")
+    done
+  done
+}
+
+if [ -n "$plan_override" ]; then
+  [ -f "$plan_override" ] && candidates=("$plan_override")
+else
+  collect_candidates "$project_dir"
+  if [ -n "$git_root" ] && [ "$git_root" != "$project_dir" ]; then
+    collect_candidates "$git_root"
+  fi
+fi
+
+# Order newest-first so the tie-break below is "the plan most recently worked
+# on". ls -t sorts by mtime on both GNU and BSD userlands.
+if [ "${#candidates[@]}" -gt 1 ]; then
+  ordered=()
+  while IFS= read -r line; do
+    [ -n "$line" ] && ordered+=("$line")
+  done < <(ls -t -- "${candidates[@]}" 2>/dev/null)
+  [ "${#ordered[@]}" -gt 0 ] && candidates=("${ordered[@]}")
+fi
+
+# Read every candidate plan in a single awk pass: how many steps are checked,
+# how many tasks are finished, and which task holds the next unchecked step.
+# One tab-separated record per plan, in the order the files were given.
+parse_plans() {
+  awk '
+    function flush(   i, tracked, tracked_done, current, title) {
+      if (file == "") return
+      tracked = 0; tracked_done = 0; current = 0; title = ""
+      for (i = 1; i <= ntasks; i++) {
+        if (boxes[i] == 0) continue
+        tracked++
+        if (open[i] == 0) {
+          tracked_done++
+        } else if (current == 0) {
+          current = tracked
+          title = titles[i]
+          sub(/^#+[ \t]*/, "", title)
+          sub(/^[Tt]ask[ \t]*[0-9][0-9A-Za-z]*[:.)]?[ \t]*/, "", title)
+          gsub(/\*\*/, "", title)
+          gsub(/`/, "", title)
+          gsub(/\t/, " ", title)
+          sub(/[ \t]+$/, "", title)
+        }
+      }
+      printf "%s\t%d\t%d\t%d\t%d\t%d\t%s\n",
+        file, total, done, tracked, tracked_done, current, title
+    }
+    FNR == 1 {
+      flush()
+      file = FILENAME
+      total = 0; done = 0; ntasks = 0
+      split("", titles); split("", boxes); split("", open)
+    }
+    /^##+[ \t]+[Tt]ask[ \t]/ {
+      ntasks++
+      titles[ntasks] = $0
+      boxes[ntasks] = 0
+      open[ntasks] = 0
+      next
+    }
+    /^[ \t]*[-*] \[[ xX]\]/ {
+      total++
+      checked = ($0 ~ /^[ \t]*[-*] \[[xX]\]/)
+      if (checked) done++
+      if (ntasks > 0) {
+        boxes[ntasks]++
+        if (!checked) open[ntasks]++
+      }
+    }
+    END { flush() }
+  ' "$@" 2>/dev/null
+}
+
+# Pick the plan this session is working on:
+#   1. the plan whose slug matches the current branch,
+#   2. the most recently touched plan with work in flight,
+#   3. the most recently touched plan with any steps at all.
+PLAN_FILE=""
+PLAN_TOTAL=0
+PLAN_DONE=0
+PLAN_TASKS=0
+PLAN_TASKS_DONE=0
+PLAN_CURRENT=0
+PLAN_TITLE=""
+
+select_plan() {
+  local file total done_count tasks tasks_done current title
+  local branch_norm="" slug_norm
+  local matched=false
+  local progress_record="" any_record=""
+
+  [ "${#candidates[@]}" -gt 0 ] || return 0
+
+  if [ -n "$branch" ]; then
+    branch_norm="$(normalize "${branch##*/}")"
+  fi
+
+  while IFS=$'\t' read -r file total done_count tasks tasks_done current title; do
+    [ -n "$file" ] || continue
+    [ "${total:-0}" -gt 0 ] || continue
+
+    if [ "$matched" = false ] && [ -n "$branch_norm" ]; then
+      slug_norm="$(normalize "$(plan_slug "$file")")"
+      if [ -n "$slug_norm" ]; then
+        case "$branch_norm" in
+          *"$slug_norm"*)
+            matched=true
+            progress_record=""
+            any_record="$file"$'\t'"$total"$'\t'"$done_count"$'\t'"$tasks"$'\t'"$tasks_done"$'\t'"$current"$'\t'"$title"
+            break
+            ;;
+        esac
+      fi
+    fi
+
+    if [ -z "$progress_record" ] && [ "$done_count" -gt 0 ] && [ "$done_count" -lt "$total" ]; then
+      progress_record="$file"$'\t'"$total"$'\t'"$done_count"$'\t'"$tasks"$'\t'"$tasks_done"$'\t'"$current"$'\t'"$title"
+    fi
+    if [ -z "$any_record" ]; then
+      any_record="$file"$'\t'"$total"$'\t'"$done_count"$'\t'"$tasks"$'\t'"$tasks_done"$'\t'"$current"$'\t'"$title"
+    fi
+  done < <(parse_plans "${candidates[@]}")
+
+  local record="$progress_record"
+  [ -n "$record" ] || record="$any_record"
+  [ -n "$record" ] || return 0
+
+  IFS=$'\t' read -r PLAN_FILE PLAN_TOTAL PLAN_DONE PLAN_TASKS PLAN_TASKS_DONE \
+    PLAN_CURRENT PLAN_TITLE <<EOF
+$record
+EOF
+}
+
+select_plan
+
+# ---------------------------------------------------------------- rendering --
+
+if [ "$use_color" = true ]; then
+  C_RESET=$'\033[0m'
+  C_DIM=$'\033[2m'
+  C_BOLD=$'\033[1m'
+  C_GREEN=$'\033[32m'
+  C_CYAN=$'\033[36m'
+else
+  C_RESET=""
+  C_DIM=""
+  C_BOLD=""
+  C_GREEN=""
+  C_CYAN=""
+fi
+
+if [ "$ascii" = true ]; then
+  BAR_FULL="#"
+  BAR_EMPTY="-"
+  MARK_ACTIVE=">"
+  MARK_DONE="*"
+  SEP="|"
+else
+  BAR_FULL="▰"
+  BAR_EMPTY="▱"
+  MARK_ACTIVE="⚡"
+  MARK_DONE="✓"
+  SEP="·"
+fi
+
+truncate_to() {
+  local text="$1" limit="$2"
+  if [ "${#text}" -le "$limit" ]; then
+    printf '%s' "$text"
+  else
+    printf '%s…' "${text:0:$((limit - 1))}"
+  fi
+}
+
+render_bar() {
+  local done_count="$1" total="$2" filled i out
+
+  filled=$(((done_count * bar_width + total / 2) / total))
+  [ "$filled" -le "$bar_width" ] || filled="$bar_width"
+  [ "$filled" -ge 0 ] || filled=0
+
+  out="$C_GREEN"
+  for ((i = 0; i < filled; i++)); do
+    out="$out$BAR_FULL"
+  done
+  out="$out$C_DIM"
+  for ((i = filled; i < bar_width; i++)); do
+    out="$out$BAR_EMPTY"
+  done
+  printf '%s%s' "$out" "$C_RESET"
+}
+
+build_segment() {
+  local pct bar mark name out
+
+  [ -n "$PLAN_FILE" ] && [ "$PLAN_TOTAL" -gt 0 ] || return 0
+
+  pct=$(((PLAN_DONE * 100 + PLAN_TOTAL / 2) / PLAN_TOTAL))
+  bar="$(render_bar "$PLAN_DONE" "$PLAN_TOTAL")"
+  name="$(truncate_to "$(plan_slug "$PLAN_FILE")" 28)"
+
+  if [ "$PLAN_DONE" -ge "$PLAN_TOTAL" ]; then
+    mark="$MARK_DONE"
+  else
+    mark="$MARK_ACTIVE"
+  fi
+
+  if [ "$style" = "compact" ]; then
+    out="${mark} ${bar} ${C_BOLD}${pct}%${C_RESET} ${C_DIM}${PLAN_DONE}/${PLAN_TOTAL}${C_RESET}"
+  else
+    out="${mark} ${C_CYAN}${name}${C_RESET} ${bar} ${C_BOLD}${pct}%${C_RESET}"
+    if [ "$PLAN_TASKS" -gt 0 ] && [ "$PLAN_CURRENT" -gt 0 ]; then
+      out="${out} ${C_DIM}${SEP} task ${PLAN_CURRENT}/${PLAN_TASKS}${C_RESET}"
+      if [ -n "$PLAN_TITLE" ]; then
+        out="${out}${C_DIM}: $(truncate_to "$PLAN_TITLE" 24)${C_RESET}"
+      fi
+    elif [ "$PLAN_TASKS" -gt 0 ]; then
+      out="${out} ${C_DIM}${SEP} ${PLAN_TASKS_DONE}/${PLAN_TASKS} tasks${C_RESET}"
+    fi
+    out="${out} ${C_DIM}${SEP} ${PLAN_DONE}/${PLAN_TOTAL} steps${C_RESET}"
+  fi
+
+  printf '%s' "$out"
+}
+
+segment="$(build_segment)"
+
+if [ "$segment_only" = true ]; then
+  [ -n "$segment" ] && printf '%s\n' "$segment"
+  exit 0
+fi
+
+line="${C_BOLD}${project_dir##*/}${C_RESET}"
+if [ -n "$branch" ]; then
+  line="${line} ${C_DIM}${SEP} ${branch}${C_RESET}"
+fi
+if [ -n "$segment" ]; then
+  line="${line} ${C_DIM}${SEP}${C_RESET} ${segment}"
+fi
+printf '%s\n' "$line"
