@@ -100,9 +100,15 @@ esac
 # --------------------------------------------------------------- harness IO --
 
 # Read the harness status JSON, if the harness gave us one.
+#
+# The harness writes its JSON and closes stdin, so this returns at once. Never
+# block waiting for an EOF that may never come: a stdin that is neither a tty
+# nor closed — a manual run from inside a script, cron, a harness that leaves
+# its own stdin open — would otherwise hang the statusline forever. When the
+# project directory is already known there is nothing to read at all.
 status_json=""
-if [ ! -t 0 ]; then
-  status_json="$(cat 2>/dev/null || true)"
+if [ -z "$project_dir" ] && [ ! -t 0 ]; then
+  IFS= read -r -d '' -t 1 status_json 2>/dev/null || true
 fi
 
 # Pull a string value out of the status JSON without a JSON parser: the payload

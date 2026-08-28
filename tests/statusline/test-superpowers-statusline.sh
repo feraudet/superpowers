@@ -25,6 +25,10 @@ fail() {
   FAILURES=$((FAILURES + 1))
 }
 
+skip() {
+  echo "  [SKIP] $1 ($2)"
+}
+
 assert_contains() {
   local description="$1" haystack="$2" needle="$3"
   case "$haystack" in
@@ -354,7 +358,40 @@ assert_contains "--width 4 renders a four-cell bar" "$output" "▰▱▱▱ 25%"
 output="$(run_statusline "$project" --segment --no-color)"
 assert_contains "the default bar is ten cells wide" "$output" "▰▰▰▱▱▱▱▱▱▱ 25%"
 
+# --- stdin that never closes -------------------------------------------------
+# A harness writes its JSON and closes stdin. A stdin that is neither a tty nor
+# closed — a manual run from inside a script, cron, a harness that leaves its
+# own stdin open — must not hang the statusline.
+project="$(make_project idle-stdin)"
+write_plan "$project/docs/superpowers/plans/2026-01-01-idle.md" 4 1 1
+if command -v timeout >/dev/null 2>&1; then
+  fifo="$TEST_ROOT/idle-stdin.fifo"
+  mkfifo "$fifo"
+
+  sleep 30 >"$fifo" &
+  holder=$!
+  output="$(timeout 10 "$STATUSLINE" --segment --no-color --dir "$project" <"$fifo")" || output="TIMED OUT"
+  kill "$holder" 2>/dev/null
+  wait "$holder" 2>/dev/null
+  assert_contains "an open, idle stdin does not hang the statusline" "$output" "idle"
+
+  sleep 30 >"$fifo" &
+  holder=$!
+  output="$(timeout 10 "$STATUSLINE" --segment --no-color \
+    --plan "$project/docs/superpowers/plans/2026-01-01-idle.md" <"$fifo")" || output="TIMED OUT"
+  kill "$holder" 2>/dev/null
+  wait "$holder" 2>/dev/null
+  assert_contains "an open, idle stdin gives up rather than blocking" "$output" "idle"
+
+  rm -f "$fifo"
+else
+  skip "an open, idle stdin does not hang the statusline" "no timeout command"
+fi
+
 # --- resilience --------------------------------------------------------------
+project="$(make_project resilience)"
+write_plan "$project/docs/superpowers/plans/2026-01-01-json.md" 4 1 1
+
 output="$(run_statusline "$project" --segment --no-color --width bogus)"
 assert_contains "a bogus width falls back to the default" "$output" "json"
 
