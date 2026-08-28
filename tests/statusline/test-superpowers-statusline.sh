@@ -6,6 +6,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 STATUSLINE="$REPO_ROOT/statusline/superpowers-statusline"
+SDD_WORKSPACE="$REPO_ROOT/skills/subagent-driven-development/scripts/sdd-workspace"
 
 FAILURES=0
 TEST_ROOT="$(mktemp -d)"
@@ -291,6 +292,19 @@ printf '# SDD ledger — plan: %s\nTask 1: complete\nTask 2: complete\n' "$plan"
   >"$project/.superpowers/sdd/progress.md"
 output="$(run_statusline "$project" --segment --no-color)"
 assert_contains "the legacy flat ledger path is not read" "$output" "1/4 steps"
+
+# The workspace path is the skill's to define: resolve it with SDD's own script
+# rather than a copy of its logic, so a change there fails this test.
+project="$(make_project ledger-via-sdd-script)"
+plan="$project/docs/superpowers/plans/2026-01-01-via-script.md"
+write_plan "$plan" 9 0 3
+workspace="$(cd "$project" && "$SDD_WORKSPACE" docs/superpowers/plans/2026-01-01-via-script.md)"
+{
+  echo "# SDD ledger — plan: docs/superpowers/plans/2026-01-01-via-script.md"
+  echo "- Task 1: complete (commits 1111111..2222222, review clean)"
+} >"$workspace/progress.md"
+output="$(run_statusline "$project" --segment --no-color)"
+assert_contains "reads the ledger where sdd-workspace puts it" "$output" "1/3 tasks"
 
 # SDD runs in a worktree, where the ledger sits under that worktree's root.
 project="$(make_project ledger-worktree)"
