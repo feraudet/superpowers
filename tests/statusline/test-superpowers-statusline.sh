@@ -101,6 +101,22 @@ write_plan() {
   } >"$path"
 }
 
+# write_ledger <project> <plan-basename> <plan-path-line> <complete-task-numbers...>
+write_ledger() {
+  local project="$1" slug="$2" plan_line="$3"
+  shift 3
+  local dir="$project/.superpowers/sdd/${slug}"
+  local n
+
+  mkdir -p "$dir"
+  {
+    echo "# SDD ledger — plan: $plan_line"
+    for n in "$@"; do
+      echo "Task $n: complete"
+    done
+  } >"$dir/progress.md"
+}
+
 run_statusline() {
   local dir="$1"
   shift
@@ -207,7 +223,76 @@ assert_contains "--dir wins over unparseable stdin" "$output" "json"
 output="$("$STATUSLINE" --segment --no-color --dir "$project" </dev/null)"
 assert_contains "works with no stdin at all" "$output" "json"
 
+# --- SDD ledger --------------------------------------------------------------
+# subagent-driven-development never ticks the plan's checkboxes; it records
+# "Task N: complete" in .superpowers/sdd/<plan>/progress.md. That ledger is the
+# progress an SDD run actually produces, so it wins over the checkboxes.
+project="$(make_project ledger)"
+plan="$project/docs/superpowers/plans/2026-01-01-ledger-plan.md"
+write_plan "$plan" 12 0 4
+write_ledger "$project" "2026-01-01-ledger-plan" "docs/superpowers/plans/2026-01-01-ledger-plan.md" 1 2
+output="$(run_statusline "$project" --segment --no-color)"
+assert_contains "counts tasks the ledger closed" "$output" "2/4 tasks"
+assert_contains "reports ledger progress as a percentage" "$output" "50%"
+assert_contains "names the first task the ledger has not closed" "$output" "task 3/4"
+assert_not_contains "does not report unticked checkboxes as steps" "$output" "0/12 steps"
+
+write_ledger "$project" "2026-01-01-ledger-plan" "docs/superpowers/plans/2026-01-01-ledger-plan.md" 1 2 3 4
+output="$(run_statusline "$project" --segment --no-color)"
+assert_contains "a ledger with every task closed reads 100%" "$output" "100%"
+assert_contains "a finished ledger uses the done marker" "$output" "✓"
+
+# A plan with no checkboxes at all is still reportable once it has a ledger.
+project="$(make_project ledger-no-boxes)"
+plan="$project/docs/superpowers/plans/2026-01-01-headings-only.md"
+{
+  echo "# Headings Only"
+  echo
+  echo "## Task 1: First"
+  echo
+  echo "## Task 2: Second"
+} >"$plan"
+write_ledger "$project" "2026-01-01-headings-only" "$plan" 1
+output="$(run_statusline "$project" --segment --no-color)"
+assert_contains "a checkbox-free plan with a ledger still reports" "$output" "1/2 tasks"
+
+# A ledger whose first line names a different plan belongs to that plan.
+project="$(make_project ledger-mismatch)"
+plan="$project/docs/superpowers/plans/2026-01-01-mine.md"
+write_plan "$plan" 4 1 2
+mkdir -p "$project/.superpowers/sdd/2026-01-01-mine"
+{
+  echo "# SDD ledger — plan: docs/superpowers/plans/2026-01-01-someone-else.md"
+  echo "Task 1: complete"
+  echo "Task 2: complete"
+} >"$project/.superpowers/sdd/2026-01-01-mine/progress.md"
+output="$(run_statusline "$project" --segment --no-color)"
+assert_contains "a ledger naming another plan is ignored" "$output" "1/4 steps"
+
+# The pre-plan-scoping flat ledger path is another plan's progress, not ours.
+project="$(make_project ledger-flat)"
+plan="$project/docs/superpowers/plans/2026-01-01-flat.md"
+write_plan "$plan" 4 1 2
+mkdir -p "$project/.superpowers/sdd"
+printf '# SDD ledger — plan: %s\nTask 1: complete\nTask 2: complete\n' "$plan" \
+  >"$project/.superpowers/sdd/progress.md"
+output="$(run_statusline "$project" --segment --no-color)"
+assert_contains "the legacy flat ledger path is not read" "$output" "1/4 steps"
+
+# With no branch match, a plan under a live ledger beats a plan with ticked boxes.
+project="$(make_project ledger-priority)"
+write_plan "$project/docs/superpowers/plans/2026-01-01-ticked.md" 10 4 2
+write_plan "$project/docs/superpowers/plans/2026-02-02-under-sdd.md" 10 0 2
+write_ledger "$project" "2026-02-02-under-sdd" "docs/superpowers/plans/2026-02-02-under-sdd.md" 1
+touch -t 202601010000 "$project/docs/superpowers/plans/2026-01-01-ticked.md"
+touch -t 202602020000 "$project/docs/superpowers/plans/2026-02-02-under-sdd.md"
+output="$(run_statusline "$project" --segment --no-color)"
+assert_contains "a plan with a live ledger outranks one with ticked boxes" "$output" "under-sdd"
+
 # --- colors ------------------------------------------------------------------
+project="$(make_project rendering)"
+write_plan "$project/docs/superpowers/plans/2026-01-01-json.md" 4 1 1
+
 output="$(run_statusline "$project" --segment --no-color)"
 assert_not_contains "--no-color emits no escape sequences" "$output" $'\033'
 
@@ -242,11 +327,9 @@ else
   pass "unknown options exit non-zero"
 fi
 
-if "$STATUSLINE" --help </dev/null | grep -q -- "--segment"; then
-  pass "--help documents the options"
-else
-  fail "--help documents the options"
-fi
+help_text="$("$STATUSLINE" --help </dev/null)"
+assert_contains "--help documents the options" "$help_text" "--segment"
+assert_contains "--help reaches the end of the header" "$help_text" "NO_COLOR"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

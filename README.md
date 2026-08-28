@@ -279,13 +279,14 @@ turn loses the bootstrap — start a fresh session if skills stop triggering.
 
 ## Project Progress In Your Statusline
 
-Steps 3-4 above leave a paper trail: a plan file whose checkboxes get ticked off
-as the work lands. `statusline/superpowers-statusline` renders that as a
+Step 4 above leaves a paper trail: subagent-driven-development records each
+finished task in its ledger, and a plan's checkboxes track it when they get
+ticked. `statusline/superpowers-statusline` renders whichever exists as a
 statusline segment, so you can watch a long autonomous run advance without
-opening the plan:
+opening anything:
 
 ```
-superpowers · claude/add-widgets · ⚡ add-widgets ▰▰▰▰▰▰▱▱▱▱ 61% · task 4/7: Wire the CLI flag · 22/36 steps
+superpowers · claude/add-widgets · ⚡ add-widgets ▰▰▰▰▰▰▱▱▱▱ 67% · task 3/3: Docs · 2/3 tasks
 ```
 
 Point your harness's statusline command at the script — see

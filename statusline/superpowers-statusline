@@ -2,8 +2,10 @@
 #
 # Superpowers progress statusline.
 #
-# Reads the plan a superpowers project is executing and renders how far it has
-# gotten, for use as a Claude Code (or compatible harness) statusLine command.
+# Renders how far a superpowers project has gotten, for use as a Claude Code
+# (or compatible harness) statusLine command. Progress comes from the SDD
+# ledger a subagent-driven-development run keeps, or from the plan's checkboxes
+# when there is no ledger.
 #
 # Usage:
 #   superpowers-statusline [options]
@@ -33,7 +35,7 @@ set -uo pipefail
 DEFAULT_PLAN_DIRS="docs/superpowers/plans:docs/plans:plans"
 
 usage() {
-  sed -n '3,28p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '3,31p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------- arguments --
@@ -145,26 +147,27 @@ fi
 
 # ------------------------------------------------------------ plan discovery --
 
+# These helpers answer in REPLY rather than on stdout: a command substitution
+# would fork a subshell per candidate plan, and this runs on every keystroke.
+
 # Strip the date prefix and extension: "2026-08-28-add-widgets.md" -> "add-widgets".
 plan_slug() {
-  local name="${1##*/}"
-  name="${name%.md}"
-  case "$name" in
-    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*) name="${name#????-??-??-}" ;;
+  REPLY="${1##*/}"
+  REPLY="${REPLY%.md}"
+  case "$REPLY" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*) REPLY="${REPLY#????-??-??-}" ;;
   esac
-  printf '%s' "$name"
 }
 
 # Collapse runs of non-alphanumerics into single dashes so branch names and plan
-# slugs compare cleanly. Pure bash: this runs on every keystroke.
+# slugs compare cleanly.
 normalize() {
-  local text="${1//[!a-zA-Z0-9]/-}"
-  while [ "$text" != "${text//--/-}" ]; do
-    text="${text//--/-}"
+  REPLY="${1//[!a-zA-Z0-9]/-}"
+  while [ "$REPLY" != "${REPLY//--/-}" ]; do
+    REPLY="${REPLY//--/-}"
   done
-  text="${text#-}"
-  text="${text%-}"
-  printf '%s' "$text"
+  REPLY="${REPLY#-}"
+  REPLY="${REPLY%-}"
 }
 
 candidates=()
@@ -265,10 +268,72 @@ parse_plans() {
   ' "$@" 2>/dev/null
 }
 
+# Where subagent-driven-development keeps this plan's ledger. The ledger, not
+# the plan's checkboxes, is what an SDD run actually updates as tasks land.
+ledger_path() {
+  local slug="${1##*/}"
+  slug="${slug%.md}"
+  REPLY="$2/.superpowers/sdd/$slug/progress.md"
+}
+
+# A ledger belongs to a plan only if its first line names that plan.
+ledger_matches() {
+  local ledger="$1" plan_name="${2##*/}" first=""
+
+  [ -f "$ledger" ] || return 1
+  read -r first <"$ledger" 2>/dev/null || return 1
+  case "$first" in
+    *"$plan_name"*) return 0 ;;
+  esac
+  return 1
+}
+
+# Count the tasks an SDD ledger reports complete against the tasks the plan
+# defines, and name the first task still outstanding.
+parse_ledger() {
+  awk '
+    FNR == NR {
+      if (match($0, /[Tt]ask[ \t]+[0-9][0-9A-Za-z]*[ \t]*:[ \t]*complete/)) {
+        label = substr($0, RSTART, RLENGTH)
+        sub(/^[Tt]ask[ \t]+/, "", label)
+        sub(/[ \t]*:.*$/, "", label)
+        complete[tolower(label)] = 1
+      }
+      next
+    }
+    /^##+[ \t]+[Tt]ask[ \t]/ {
+      heading = $0
+      sub(/^#+[ \t]*/, "", heading)
+      label = heading
+      sub(/^[Tt]ask[ \t]*/, "", label)
+      sub(/[:.)].*$/, "", label)
+      gsub(/[ \t]/, "", label)
+      title = heading
+      sub(/^[Tt]ask[ \t]*[0-9][0-9A-Za-z]*[:.)]?[ \t]*/, "", title)
+      gsub(/\*\*/, "", title)
+      gsub(/`/, "", title)
+      gsub(/\t/, " ", title)
+      sub(/[ \t]+$/, "", title)
+      ntasks++
+      if (tolower(label) in complete) {
+        ndone++
+      } else if (current == 0) {
+        current = ntasks
+        curtitle = title
+      }
+    }
+    END {
+      if (ndone > ntasks) ndone = ntasks
+      printf "%d\t%d\t%d\t%s\n", ntasks, ndone, current, curtitle
+    }
+  ' "$1" "$2" 2>/dev/null
+}
+
 # Pick the plan this session is working on:
 #   1. the plan whose slug matches the current branch,
-#   2. the most recently touched plan with work in flight,
-#   3. the most recently touched plan with any steps at all.
+#   2. the plan with a live SDD ledger,
+#   3. the most recently touched plan with work in flight,
+#   4. the most recently touched plan with any steps at all.
 PLAN_FILE=""
 PLAN_TOTAL=0
 PLAN_DONE=0
@@ -276,53 +341,98 @@ PLAN_TASKS=0
 PLAN_TASKS_DONE=0
 PLAN_CURRENT=0
 PLAN_TITLE=""
+PLAN_SOURCE="steps"
 
 select_plan() {
-  local file total done_count tasks tasks_done current title
-  local branch_norm="" slug_norm
-  local matched=false
-  local progress_record="" any_record=""
+  local file total done_count tasks tasks_done current title record
+  local branch_norm="" slug_norm root ledger
+  local ledger_record="" progress_record="" any_record=""
+  local has_ledger
 
   [ "${#candidates[@]}" -gt 0 ] || return 0
 
   if [ -n "$branch" ]; then
-    branch_norm="$(normalize "${branch##*/}")"
+    normalize "${branch##*/}"
+    branch_norm="$REPLY"
   fi
+
+  root="$git_root"
+  [ -n "$root" ] || root="$project_dir"
 
   while IFS=$'\t' read -r file total done_count tasks tasks_done current title; do
     [ -n "$file" ] || continue
-    [ "${total:-0}" -gt 0 ] || continue
 
-    if [ "$matched" = false ] && [ -n "$branch_norm" ]; then
-      slug_norm="$(normalize "$(plan_slug "$file")")"
+    has_ledger=false
+    ledger_path "$file" "$root"
+    ledger="$REPLY"
+    if ledger_matches "$ledger" "$file"; then
+      has_ledger=true
+    elif [ "${total:-0}" -eq 0 ]; then
+      # No steps and no ledger: nothing to report about this file.
+      continue
+    fi
+
+    record="$file"$'\t'"$total"$'\t'"$done_count"$'\t'"$tasks"$'\t'"$tasks_done"$'\t'"$current"$'\t'"$title"
+
+    if [ -n "$branch_norm" ]; then
+      plan_slug "$file"
+      normalize "$REPLY"
+      slug_norm="$REPLY"
       if [ -n "$slug_norm" ]; then
         case "$branch_norm" in
           *"$slug_norm"*)
-            matched=true
-            progress_record=""
-            any_record="$file"$'\t'"$total"$'\t'"$done_count"$'\t'"$tasks"$'\t'"$tasks_done"$'\t'"$current"$'\t'"$title"
-            break
+            set_plan "$record"
+            return 0
             ;;
         esac
       fi
     fi
 
-    if [ -z "$progress_record" ] && [ "$done_count" -gt 0 ] && [ "$done_count" -lt "$total" ]; then
-      progress_record="$file"$'\t'"$total"$'\t'"$done_count"$'\t'"$tasks"$'\t'"$tasks_done"$'\t'"$current"$'\t'"$title"
+    if [ -z "$ledger_record" ] && [ "$has_ledger" = true ]; then
+      ledger_record="$record"
     fi
-    if [ -z "$any_record" ]; then
-      any_record="$file"$'\t'"$total"$'\t'"$done_count"$'\t'"$tasks"$'\t'"$tasks_done"$'\t'"$current"$'\t'"$title"
+    if [ -z "$progress_record" ] && [ "$done_count" -gt 0 ] && [ "$done_count" -lt "$total" ]; then
+      progress_record="$record"
+    fi
+    if [ -z "$any_record" ] && [ "$total" -gt 0 ]; then
+      any_record="$record"
     fi
   done < <(parse_plans "${candidates[@]}")
 
-  local record="$progress_record"
+  record="$ledger_record"
+  [ -n "$record" ] || record="$progress_record"
   [ -n "$record" ] || record="$any_record"
   [ -n "$record" ] || return 0
 
+  set_plan "$record"
+}
+
+set_plan() {
+  local root ledger ntasks ndone current title
+
   IFS=$'\t' read -r PLAN_FILE PLAN_TOTAL PLAN_DONE PLAN_TASKS PLAN_TASKS_DONE \
     PLAN_CURRENT PLAN_TITLE <<EOF
-$record
+$1
 EOF
+
+  root="$git_root"
+  [ -n "$root" ] || root="$project_dir"
+  ledger_path "$PLAN_FILE" "$root"
+  ledger="$REPLY"
+  ledger_matches "$ledger" "$PLAN_FILE" || return 0
+
+  # An SDD run reports its progress in the ledger, so prefer it over the
+  # plan's checkboxes, which that run never touches.
+  IFS=$'\t' read -r ntasks ndone current title <<EOF
+$(parse_ledger "$ledger" "$PLAN_FILE")
+EOF
+  [ "${ntasks:-0}" -gt 0 ] || return 0
+
+  PLAN_SOURCE="ledger"
+  PLAN_TASKS="$ntasks"
+  PLAN_TASKS_DONE="$ndone"
+  PLAN_CURRENT="$current"
+  PLAN_TITLE="$title"
 }
 
 select_plan
@@ -386,21 +496,36 @@ render_bar() {
 
 build_segment() {
   local pct bar mark name out
+  local done_count total unit
 
-  [ -n "$PLAN_FILE" ] && [ "$PLAN_TOTAL" -gt 0 ] || return 0
+  [ -n "$PLAN_FILE" ] || return 0
 
-  pct=$(((PLAN_DONE * 100 + PLAN_TOTAL / 2) / PLAN_TOTAL))
-  bar="$(render_bar "$PLAN_DONE" "$PLAN_TOTAL")"
-  name="$(truncate_to "$(plan_slug "$PLAN_FILE")" 28)"
+  # An SDD run's progress is counted in tasks the ledger closed; a plan whose
+  # checkboxes get ticked is counted in steps.
+  if [ "$PLAN_SOURCE" = "ledger" ]; then
+    done_count="$PLAN_TASKS_DONE"
+    total="$PLAN_TASKS"
+    unit="tasks"
+  else
+    done_count="$PLAN_DONE"
+    total="$PLAN_TOTAL"
+    unit="steps"
+  fi
+  [ "$total" -gt 0 ] || return 0
 
-  if [ "$PLAN_DONE" -ge "$PLAN_TOTAL" ]; then
+  pct=$(((done_count * 100 + total / 2) / total))
+  bar="$(render_bar "$done_count" "$total")"
+  plan_slug "$PLAN_FILE"
+  name="$(truncate_to "$REPLY" 28)"
+
+  if [ "$done_count" -ge "$total" ]; then
     mark="$MARK_DONE"
   else
     mark="$MARK_ACTIVE"
   fi
 
   if [ "$style" = "compact" ]; then
-    out="${mark} ${bar} ${C_BOLD}${pct}%${C_RESET} ${C_DIM}${PLAN_DONE}/${PLAN_TOTAL}${C_RESET}"
+    out="${mark} ${bar} ${C_BOLD}${pct}%${C_RESET} ${C_DIM}${done_count}/${total}${C_RESET}"
   else
     out="${mark} ${C_CYAN}${name}${C_RESET} ${bar} ${C_BOLD}${pct}%${C_RESET}"
     if [ "$PLAN_TASKS" -gt 0 ] && [ "$PLAN_CURRENT" -gt 0 ]; then
@@ -411,7 +536,9 @@ build_segment() {
     elif [ "$PLAN_TASKS" -gt 0 ]; then
       out="${out} ${C_DIM}${SEP} ${PLAN_TASKS_DONE}/${PLAN_TASKS} tasks${C_RESET}"
     fi
-    out="${out} ${C_DIM}${SEP} ${PLAN_DONE}/${PLAN_TOTAL} steps${C_RESET}"
+    if [ "$unit" != "tasks" ] || [ "$PLAN_CURRENT" -gt 0 ]; then
+      out="${out} ${C_DIM}${SEP} ${done_count}/${total} ${unit}${C_RESET}"
+    fi
   fi
 
   printf '%s' "$out"
