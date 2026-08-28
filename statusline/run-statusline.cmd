@@ -34,6 +34,8 @@ REM degrades to empty instead of showing a shell error.
 exit /b 0
 CMDBLOCK
 
-# Unix: run the statusline script directly
+# Unix: run the statusline script directly.
+# An exported CDPATH makes cd echo where it landed, which would corrupt the path.
+CDPATH=''
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 exec bash "${SCRIPT_DIR}/superpowers-statusline" "$@"

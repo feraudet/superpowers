@@ -3,6 +3,10 @@
 # Tests for statusline/superpowers-statusline.
 set -uo pipefail
 
+# An exported CDPATH makes cd echo the directory it landed in, which would end
+# up inside these command substitutions.
+CDPATH=''
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 STATUSLINE="$REPO_ROOT/statusline/superpowers-statusline"
