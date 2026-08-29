@@ -177,6 +177,7 @@ normalize() {
 }
 
 candidates=()
+plan_dirs=()
 collect_candidates() {
   local root="$1" rel dir file saved_ifs
 
@@ -195,6 +196,7 @@ collect_candidates() {
       *) dir="$root/$rel" ;;
     esac
     [ -d "$dir" ] || continue
+    plan_dirs+=("$dir")
     for file in "$dir"/*.md; do
       [ -f "$file" ] || continue
       candidates+=("$file")
@@ -335,11 +337,45 @@ parse_ledger() {
   ' "$1" "$2" 2>/dev/null
 }
 
+# Plans git reports as modified or untracked: ones you just wrote, or just
+# ticked a box in. A committed, unmodified plan is archive, whatever its
+# checkboxes say — nothing ticks them off on its own, so their state is not
+# evidence that any work is in flight.
+uncommitted_plans=""
+uncommitted_loaded=false
+
+load_uncommitted_plans() {
+  local line path
+
+  [ "$uncommitted_loaded" = false ] || return 0
+  uncommitted_loaded=true
+  [ -n "$git_root" ] && [ "${#plan_dirs[@]}" -gt 0 ] || return 0
+
+  uncommitted_plans=$'\n'
+  while IFS= read -r -d '' line; do
+    path="${line:3}"
+    [ -n "$path" ] || continue
+    uncommitted_plans="${uncommitted_plans}${git_root}/${path}"$'\n'
+  done < <(git -C "$git_root" status --porcelain -z --untracked-files=all \
+    -- "${plan_dirs[@]}" 2>/dev/null)
+}
+
+is_uncommitted_plan() {
+  load_uncommitted_plans
+  case "$uncommitted_plans" in
+    *$'\n'"$1"$'\n'*) return 0 ;;
+  esac
+  return 1
+}
+
 # Pick the plan this session is working on:
 #   1. the plan whose slug matches the current branch,
 #   2. the plan with a live SDD ledger,
-#   3. the most recently touched plan with work in flight,
-#   4. the most recently touched plan with any steps at all.
+#   3. among the plans git reports as modified or untracked, the most recently
+#      touched one with work in flight, then the most recently touched one.
+#
+# Every one of those is something a person or a tool wrote. A plan that is
+# committed and unmodified is never picked on the strength of its checkboxes.
 PLAN_FILE=""
 PLAN_TOTAL=0
 PLAN_DONE=0
@@ -392,6 +428,14 @@ select_plan() {
             ;;
         esac
       fi
+    fi
+
+    # A plan named on the command line is the strongest evidence there is, and
+    # outside a git repository there is no way to tell archive from live work
+    # — and no archive to speak of. Both keep every candidate.
+    if [ -z "$plan_override" ] && [ "$has_ledger" = false ] && [ -n "$git_root" ] \
+      && ! is_uncommitted_plan "$file"; then
+      continue
     fi
 
     if [ -z "$ledger_record" ] && [ "$has_ledger" = true ]; then

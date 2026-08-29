@@ -201,6 +201,43 @@ output="$(SUPERPOWERS_STATUSLINE_PLAN="$project/docs/superpowers/plans/2026-02-0
   run_statusline "$project" --segment --no-color)"
 assert_contains "SUPERPOWERS_STATUSLINE_PLAN overrides auto-detection" "$output" "untouched"
 
+# --- committed plans are archive ---------------------------------------------
+# Repositories accumulate finished plans, and nothing ticks a plan's checkboxes
+# off as the work lands, so a committed plan's checkbox state says nothing about
+# whether any work is in flight. Only a plan git reports as modified or
+# untracked counts as evidence — unless the branch or a ledger names it.
+project="$(make_project archive main)"
+write_plan "$project/docs/superpowers/plans/2026-01-01-long-done.md" 100 5 4
+git -C "$project" add -A
+git -C "$project" commit -qm "archive the plan"
+output="$(run_statusline "$project" --segment --no-color)"
+assert_equals "a committed, unmodified plan is not reported" "$output" ""
+
+printf -- '- [x] **Step 101: a fresh tick**\n' >>"$project/docs/superpowers/plans/2026-01-01-long-done.md"
+output="$(run_statusline "$project" --segment --no-color)"
+assert_contains "the same plan reports once it is modified" "$output" "long-done"
+
+git -C "$project" checkout -q -- docs/superpowers/plans/2026-01-01-long-done.md
+output="$(run_statusline "$project" --segment --no-color)"
+assert_equals "and goes quiet again once the edit is reverted" "$output" ""
+
+# The branch naming a plan is evidence, committed or not.
+project="$(make_project archive-branch-match feature/long-done)"
+write_plan "$project/docs/superpowers/plans/2026-01-01-long-done.md" 10 3 2
+git -C "$project" add -A
+git -C "$project" commit -qm "archive the plan"
+output="$(run_statusline "$project" --segment --no-color)"
+assert_contains "a committed plan named by the branch still reports" "$output" "long-done"
+
+# So is a ledger.
+project="$(make_project archive-ledger main)"
+write_plan "$project/docs/superpowers/plans/2026-01-01-under-sdd.md" 10 0 2
+git -C "$project" add -A
+git -C "$project" commit -qm "archive the plan"
+write_ledger "$project" "2026-01-01-under-sdd" "docs/superpowers/plans/2026-01-01-under-sdd.md" 1
+output="$(run_statusline "$project" --segment --no-color)"
+assert_contains "a committed plan under a live ledger still reports" "$output" "1/2 tasks"
+
 # --- custom plan directories -------------------------------------------------
 project="$(make_project custom-dirs)"
 mkdir -p "$project/planning"

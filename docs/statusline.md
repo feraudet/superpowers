@@ -96,15 +96,34 @@ the plans that have steps or a ledger, the script picks:
    `claude/add-widgets-x7f2`, the date prefix and punctuation ignored;
 2. otherwise a plan with a live SDD ledger — one whose first line,
    `# SDD ledger — plan: <path>`, names that plan;
-3. otherwise the most recently modified plan with checkboxes in flight (some
-   ticked, some not);
-4. otherwise the most recently modified plan with steps in it.
+3. otherwise, among the plans git reports as modified or untracked, the most
+   recently modified one with checkboxes in flight, then the most recently
+   modified one.
 
 Plans with neither checkboxes nor a ledger are ignored, and so is a project
 with no plans — the segment is simply empty.
 
 Point it somewhere else with `--plan path/to/plan.md`, or set
-`SUPERPOWERS_STATUSLINE_PLAN` for a whole session.
+`SUPERPOWERS_STATUSLINE_PLAN` for a whole session. A plan you name that way is
+reported whatever its git state.
+
+### A committed plan is archive
+
+Every one of those three signals is something a person or a tool wrote: you
+named the branch, the SDD controller wrote the ledger, you edited the plan.
+A plan that is committed and unmodified is not evidence of anything, whatever
+its checkboxes say.
+
+That rule is what keeps the segment honest in a repository that has been
+running Superpowers for a while. This repository carries fifteen finished
+plans; fourteen show zero ticked boxes although their work shipped, and one
+shows five ticks out of a hundred, from May. Ranking those by checkbox state
+would pin the statusline to a stranger's four-month-old plan and leave it
+there. There is nothing to report in a checkout like that, so the segment
+reports nothing.
+
+Outside a git repository the script cannot tell archive from live work, and
+there is no archive to speak of, so every plan stays a candidate.
 
 ### Ledger before checkboxes
 
@@ -142,17 +161,18 @@ Environment equivalents: `SUPERPOWERS_STATUSLINE_PLAN`,
 statusline/superpowers-statusline --dir . --segment
 ```
 
-If that prints nothing, the project has no plan with `- [ ]` checkboxes or a
-ledger in a searched directory. A plan kept somewhere else needs
-`SUPERPOWERS_STATUSLINE_PLAN_DIRS` or `--plan`.
+If that prints nothing, either the project has no plan with `- [ ]` checkboxes
+or a ledger in a searched directory, or every plan it has is committed and
+unmodified, which the script treats as archive (see above). A plan kept
+somewhere else needs `SUPERPOWERS_STATUSLINE_PLAN_DIRS` or `--plan`.
 
 **It sits at 0%.** The plan is being counted by its checkboxes and nothing is
 ticking them — expected if you are running `executing-plans`, which tracks
 progress in todos rather than in the plan file. Progress appears by itself
 under `subagent-driven-development`, which keeps the ledger.
 
-**The wrong plan is tracked.** Repositories accumulate finished plans. Name the
-branch after the plan, or set `SUPERPOWERS_STATUSLINE_PLAN`.
+**The wrong plan is tracked.** Name the branch after the plan, or set
+`SUPERPOWERS_STATUSLINE_PLAN`. Both outrank everything else.
 
 **Percentages look coarse.** The bar counts steps or tasks, not effort — a
 plan's units are deliberately bite-sized but not equal in size.
